@@ -1,0 +1,7 @@
+{
+  "watch": ["."],
+  "ext": "hs,cabal",
+  "ignore": ["dist/", "dist-newstyle/", ".stack-work/", "*.o", "*.hi"],
+  "exec": "ghci ./Main.hs",
+  "delay": 500
+}
