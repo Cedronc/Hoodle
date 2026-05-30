@@ -7,35 +7,54 @@ import qualified Text.Parsec
 import Text.Parsec.String (Parser)
 -- import Control.Applicative ((<|>), many, some)
 import Data.Char (isAlphaNum)
+import qualified Data.Map as Map
+import Control.Monad.Reader
+import Control.Concurrent.STM
+import Control.Monad.Except
+import Pool
+import qualified LazyHoodle as L
+import Data.Time.LocalTime (LocalTime)
+import qualified Data.Set as Set
+import qualified Data.Sequence as Seq
+
+-- Monads
+type AppState = (TVar UserDB, TVar (MapPool Int (L.LazyHoodle LocalTime)))
+type AppMonad a = ReaderT AppState (ExceptT Response STM) a
+
+runApp :: AppMonad a -> AppState -> STM (Either Response a)
+runApp app state = runExceptT (runReaderT app state)
+
+runAppAtomically :: AppMonad a -> AppState -> IO (Either Response a)
+runAppAtomically app state = atomically (runApp app state)
 
 --  TYPES
 
-type Token    = String
-type Login    = (Token, Token)  -- LOGIN → TOKEN : TOKEN
-type Time     = String
-type Slot     = (Time, Time)    -- SLOT → TIME / TIME
-type Slots    = [Slot]
-type Hoodle   = Slots           -- HOODLE → [ SLOTS ]
-type Hoodles  = [(Token, Slot)] -- HOODLES → TOKEN : SLOT , HOODLES
-type Schedule = Hoodles         -- SCHEDULE → { HOODLES }
+type Token      = String
+type Login      = (Token, Token)
+type Time       = LocalTime
+type Slot       = L.Timeslot Time
+type Slots      = [Slot]
+type PHoodle = L.LazyHoodle Time
+type Hoodles    = MapPool Int PHoodle
+type Schedule   = Hoodles
 
 data Request
   = AddUser Login Token
   | GetHoodle Token
   | ChangePassword Login Token
-  | AddHoodle Login Token Hoodle
-  | EditHoodle Login Token Hoodle
+  | AddHoodle Login Token PHoodle
+  | EditHoodle Login Token PHoodle
   | RemoveHoodle Login Token
   | Register Login Token
   | Unregister Login Token
-  | Toggle Login Token Slot
+  | Toggle Login Token Char
   | OptimalSchedule Login
-  deriving (Show, Eq)
+  deriving (Show)
 
 data Response
   = WrongLogin
   | OkToken Token
-  | OkHoodle Hoodle
+  | OkHoodle PHoodle
   | OkSchedule Schedule
   | NotPermitted
   | InvalidHoodle
@@ -44,7 +63,7 @@ data Response
   | NotRegistered
   | AlreadyRegistered
   | NoPossibleSchedule
-  deriving (Show, Eq)
+  deriving (Show)
 
 -- LEXER HELPERS
 
@@ -61,7 +80,10 @@ parseToken :: Parser String
 parseToken = lexeme $ many1 (alphaNum <|> char '-' <|> char '_')
 
 timeToken :: Parser Time
-timeToken = lexeme $ many1 (alphaNum <|> char ':' <|> char '-' <|> char '+' <|> char 'T')
+timeToken = lexeme $ read <$> many1 (alphaNum <|> char ':' <|> char '-' <|> char '+' <|> char 'T')
+
+parseInt :: Parser Int
+parseInt = lexeme $ read <$> many1 digit
 
 -- Fix all single-character parsers:
 lbrack, rbrack, lcurly, rcurly, comma, colon, slash :: Parser Char
@@ -80,22 +102,29 @@ parseLogin :: Parser Login
 parseLogin = (,) <$> parseToken <*> (colon *> parseToken)
 
 parseSlot :: Parser Slot
-parseSlot = (,) <$> timeToken <*> (slash *> timeToken)
+parseSlot = (\s e -> L.Timeslot s e $ Set.fromList []) <$> timeToken <*> (slash *> timeToken)
 
 parseSlots :: Parser Slots
 parseSlots = parseSlot `sepEndBy` comma
 
-parseHoodle :: Parser Hoodle
-parseHoodle = lbrack *> parseSlots <* rbrack
+parseHoodle :: Parser PHoodle
+parseHoodle = do
+  name <- parseToken          -- Parse name (String)
+  _    <- spaces              -- Skip whitespace
+  ts   <- lbrack *> parseSlots <* rbrack  -- Parse timeslots: [start/end, ...]
+  return $ L.LazyHoodle name (Seq.fromList ts) (Set.fromList [])
+  where
+    -- Parse comma-separated attendees (e.g., "alice,bob,charlie")
+    parseAttendees :: Parser [String]
+    parseAttendees = parseToken `sepBy` comma
 
-parseHoodlesEntry :: Parser (Token, Slot)
-parseHoodlesEntry = (,) <$> parseToken <*> (colon *> parseSlot)
-
-parseHoodles :: Parser Hoodles
-parseHoodles = parseHoodlesEntry `sepEndBy` comma
-
-parseSchedule :: Parser Schedule
-parseSchedule = lcurly *> parseHoodles <* rcurly
+-- These fuckheads aren't needed i think so I won't fix them from the first draft versions
+-- parseHoodlesEntry :: Parser Hoodles
+-- parseHoodlesEntry = (,) <$> parseToken <*> (colon *> parseSlot)
+-- parseHoodles :: Parser Hoodles
+-- parseHoodles = parseHoodlesEntry `sepEndBy` comma
+-- parseSchedule :: Parser Schedule
+-- parseSchedule = lcurly *> parseHoodles <* rcurly
 
 -- REQUEST PARSER
 
@@ -110,7 +139,7 @@ parseRequest = choice
   , try (GetHoodle <$ stringL "get-hoodle" <*> parseToken)
   , try (Register <$ stringL "register" <*> parseLogin <*> parseToken)
   , try (Unregister <$ stringL "unregister" <*> parseLogin <*> parseToken)
-  , try (Toggle <$ stringL "toggle" <*> parseLogin <*> parseToken <*> parseSlot)
+  , try (Toggle <$ stringL "toggle" <*> parseLogin <*> parseToken <*> digit)
   , try (OptimalSchedule <$ stringL "optimal-schedule" <*> parseLogin)
   ]
 
@@ -121,3 +150,28 @@ parseProtocolMessage input =
   case parse parseRequest "<input>" input of
     Right r -> Right r
     Left err -> Left err
+
+
+-- Users
+
+-- | A database mapping usernames (Token) to passwords (Token)
+type UserDB = Map.Map Token Token
+
+emptyDB :: UserDB
+emptyDB = Map.empty
+
+addUser :: Token -> Token -> UserDB -> UserDB
+addUser = Map.insert
+
+validLogin :: Login -> UserDB -> Bool
+validLogin (username, password) db =
+  Map.lookup username db == Just password
+
+changePassword :: Login -> Token -> AppMonad Response
+changePassword login newPass = do
+  (tvarDB, _) <- ask
+  -- first lifted to (ExceptT Response STM) then lifted to (ReaderT AppState)
+  db <- lift . lift $ readTVar tvarDB 
+  if validLogin login db
+    then return (OkToken "changed")
+    else throwError WrongLogin
