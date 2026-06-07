@@ -19,7 +19,6 @@ toTuple (Timeslot s e a) = (s, e, Set.toList a)
 -- fromTuple :: (t, t, [String]) -> Timeslot t
 -- fromTuple (s, e, a) = Timeslot s e (Set.fromList a)
 
--- TODO: Implement the strict Hoodle
 data LazyHoodle t = LazyHoodle
   { name :: String,
     --    time, time, attendees

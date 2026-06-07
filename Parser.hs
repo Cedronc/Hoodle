@@ -34,16 +34,16 @@ type Login      = (Token, Token)
 type Time       = LocalTime
 type Slot       = L.Timeslot Time
 type Slots      = [Slot]
-type PHoodle = L.LazyHoodle Time
-type Hoodles    = MapPool Int PHoodle
-type Schedule   = Hoodles
+-- type PHoodle = L.LazyHoodle Time
+type Hoodles    = MapPool Int (L.LazyHoodle Time)
+-- type Schedule   = Hoodles
 
 data Request
   = AddUser Login Token
   | GetHoodle Token
   | ChangePassword Login Token
-  | AddHoodle Login Token PHoodle
-  | EditHoodle Login Token PHoodle
+  | AddHoodle Login Token (L.LazyHoodle Time)
+  | EditHoodle Login Token (L.LazyHoodle Time)
   | RemoveHoodle Login Token
   | Register Login Token
   | Unregister Login Token
@@ -54,8 +54,8 @@ data Request
 data Response
   = WrongLogin
   | OkToken Token
-  | OkHoodle PHoodle
-  | OkSchedule Schedule
+  | OkHoodle (L.LazyHoodle LocalTime)
+  | OkSchedule Hoodles
   | NotPermitted
   | InvalidHoodle
   | NoSuchId
@@ -107,7 +107,7 @@ parseSlot = (\s e -> L.Timeslot s e $ Set.fromList []) <$> timeToken <*> (slash 
 parseSlots :: Parser Slots
 parseSlots = parseSlot `sepEndBy` comma
 
-parseHoodle :: Parser PHoodle
+parseHoodle :: Parser (L.LazyHoodle LocalTime)
 parseHoodle = do
   name <- parseToken          -- Parse name (String)
   _    <- spaces              -- Skip whitespace
@@ -167,11 +167,3 @@ validLogin :: Login -> UserDB -> Bool
 validLogin (username, password) db =
   Map.lookup username db == Just password
 
-changePassword :: Login -> Token -> AppMonad Response
-changePassword login newPass = do
-  (tvarDB, _) <- ask
-  -- first lifted to (ExceptT Response STM) then lifted to (ReaderT AppState)
-  db <- lift . lift $ readTVar tvarDB 
-  if validLogin login db
-    then return (OkToken "changed")
-    else throwError WrongLogin
