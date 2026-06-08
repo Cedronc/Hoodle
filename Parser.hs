@@ -118,14 +118,6 @@ parseHoodle = do
     parseAttendees :: Parser [String]
     parseAttendees = parseToken `sepBy` comma
 
--- These fuckheads aren't needed i think so I won't fix them from the first draft versions
--- parseHoodlesEntry :: Parser Hoodles
--- parseHoodlesEntry = (,) <$> parseToken <*> (colon *> parseSlot)
--- parseHoodles :: Parser Hoodles
--- parseHoodles = parseHoodlesEntry `sepEndBy` comma
--- parseSchedule :: Parser Schedule
--- parseSchedule = lcurly *> parseHoodles <* rcurly
-
 -- REQUEST PARSER
 
 parseRequest :: Parser Request

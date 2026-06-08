@@ -7,6 +7,8 @@ import Hoodle
 import Pool
 import Data.Time (LocalTime)
 import LazyHoodle
+import TCP
+import Parser
 
 -- IO code
 
